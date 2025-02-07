@@ -55,7 +55,7 @@ impl SubscriptionHandle {
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SubscriptionNode {
+pub struct SubscriptionNode {
     /// The name of the service or subgraph that the subscription is querying.
     pub(crate) service_name: Arc<str>,
 

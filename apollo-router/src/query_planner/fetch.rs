@@ -98,7 +98,7 @@ pub(crate) type SubgraphSchemas = HashMap<String, Arc<Valid<apollo_compiler::Sch
 /// A fetch node.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct FetchNode {
+pub struct FetchNode {
     /// The name of the service or subgraph that the fetch is querying.
     pub(crate) service_name: Arc<str>,
 
@@ -111,13 +111,13 @@ pub(crate) struct FetchNode {
     pub(crate) variable_usages: Vec<Arc<str>>,
 
     /// The GraphQL subquery that is used for the fetch.
-    pub(crate) operation: SubgraphOperation,
+    pub operation: SubgraphOperation,
 
     /// The GraphQL subquery operation name.
-    pub(crate) operation_name: Option<Arc<str>>,
+    pub operation_name: Option<Arc<str>>,
 
     /// The GraphQL operation kind that is used for the fetch.
-    pub(crate) operation_kind: OperationKind,
+    pub operation_kind: OperationKind,
 
     /// Optional id used by Deferred nodes
     pub(crate) id: Option<String>,
@@ -142,7 +142,7 @@ pub(crate) struct FetchNode {
 }
 
 #[derive(Clone)]
-pub(crate) struct SubgraphOperation {
+pub struct SubgraphOperation {
     serialized: String,
     /// Ideally this would be always present, but we don’t have access to the subgraph schemas
     /// during `Deserialize`.
@@ -165,7 +165,7 @@ impl SubgraphOperation {
         }
     }
 
-    pub(crate) fn as_serialized(&self) -> &str {
+    pub fn as_serialized(&self) -> &str {
         &self.serialized
     }
 

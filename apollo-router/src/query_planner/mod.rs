@@ -6,11 +6,11 @@ pub(crate) use bridge_query_planner::*;
 pub(crate) use bridge_query_planner_pool::*;
 pub(crate) use caching_query_planner::*;
 pub use plan::QueryPlan;
-pub(crate) use plan::*;
+pub use plan::*;
 
 pub use self::fetch::OperationKind;
 
-pub(crate) mod bridge_query_planner;
+pub mod bridge_query_planner;
 mod bridge_query_planner_pool;
 mod caching_query_planner;
 mod convert;
@@ -18,7 +18,7 @@ pub(crate) mod dual_query_planner;
 mod execution;
 pub(crate) mod fetch;
 mod labeler;
-mod plan;
+pub mod plan;
 pub(crate) mod rewrites;
 mod selection;
 mod subgraph_context;

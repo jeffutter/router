@@ -1,0 +1,9 @@
+[package]
+name = "apollo-planner-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+apollo-router = { path = "../apollo-router", version = "=1.57.1" }
+tokio.workspace = true
+router-bridge = { path = "../router-bridge/" }

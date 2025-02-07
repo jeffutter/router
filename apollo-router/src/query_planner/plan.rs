@@ -106,7 +106,7 @@ impl QueryPlan {
 /// Query plans are composed of a set of nodes.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase", tag = "kind")]
-pub(crate) enum PlanNode {
+pub enum PlanNode {
     /// These nodes must be executed in order.
     Sequence {
         /// The plan nodes that make up the sequence execution.
@@ -560,7 +560,7 @@ impl PlanNode {
 /// A flatten node.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct FlattenNode {
+pub struct FlattenNode {
     /// The path when result should be merged.
     pub(crate) path: Path,
 
@@ -571,7 +571,7 @@ pub(crate) struct FlattenNode {
 /// A primary query for a Defer node, the non deferred part
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Primary {
+pub struct Primary {
     /// The part of the original query that "selects" the data to
     /// send in that primary response (once the plan in `node` completes).
     pub(crate) subselection: Option<String>,
@@ -585,7 +585,7 @@ pub(crate) struct Primary {
 /// the response to the client (after the initial non-deferred one that is).
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct DeferredNode {
+pub struct DeferredNode {
     /// References one or more fetch node(s) (by `id`) within
     /// `primary.node`. The plan of this deferred part should not
     /// be started before all those fetches returns.

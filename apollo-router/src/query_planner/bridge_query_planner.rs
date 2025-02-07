@@ -819,7 +819,7 @@ impl BridgeQueryPlanner {
 #[serde(rename_all = "camelCase")]
 pub struct QueryPlanResult {
     pub(super) formatted_query_plan: Option<Arc<String>>,
-    pub(super) query_plan: QueryPlan,
+    pub query_plan: QueryPlan,
     pub(super) evaluated_plan_count: u64,
 }
 
@@ -832,9 +832,9 @@ impl QueryPlanResult {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 /// The root query plan container.
-pub(super) struct QueryPlan {
+pub struct QueryPlan {
     /// The hierarchical nodes that make up the query plan
-    pub(super) node: Option<Arc<PlanNode>>,
+    pub node: Option<Arc<PlanNode>>,
 }
 
 // Note: Reexported under `apollo_router::_private`

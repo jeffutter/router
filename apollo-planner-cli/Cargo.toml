@@ -1,0 +1,11 @@
+[package]
+name = "apollo-planner-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+apollo-router = { path = "../apollo-router", version = "1.60.1-rc.0" }
+apollo-federation = { path = "../apollo-federation", version = "1.60.1-rc.0" }
+tokio.workspace = true
+apollo-compiler.workspace = true
+graphql-parser = "0.4.1"

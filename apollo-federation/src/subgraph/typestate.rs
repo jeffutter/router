@@ -961,7 +961,11 @@ pub(crate) fn expand_schema(schema: Schema) -> Result<FederationSchema, Federati
     //            It seems to make sense for it to be a part of expansion stage. We can create
     //            a separate stage for it between `Expanded` and `Validated` if we need a stage
     //            that is expanded, but federation operations are not added.
-    trace!("expand_links: add_federation_operations");
+    trace!(
+        is_fed_1_subgraph = schema.is_fed_1_subgraph(),
+        is_fed_2_link = schema.is_fed_2(),
+        "expand_links: add_federation_operations"
+    );
     schema.add_federation_operations()?;
 
     schema.add_implicit_root_operations()?;
@@ -1026,11 +1030,28 @@ impl FederationSchema {
             query_root_pos.get(self.schema())?.name.clone()
         };
 
-        // Add or remove `Query._entities` (if applicable)
+        let is_fed_1_subgraph = self.is_fed_1_subgraph();
+
         let entity_field_pos = ObjectFieldDefinitionPosition {
             type_name: query_root_type_name.clone(),
             field_name: FEDERATION_ENTITIES_FIELD_NAME,
         };
+        let service_field_pos = ObjectFieldDefinitionPosition {
+            type_name: query_root_type_name.clone(),
+            field_name: FEDERATION_SERVICE_FIELD_NAME,
+        };
+
+        // PORT_NOTE: Fed 1 — JS drops user-defined `Query._service` / `Query._entities` while
+        //            building types (`buildNamedTypeInner` in buildSchema.ts; Rust:
+        //            `FederationBlueprint::ignore_parsed_field`). `addFederationOperations` then
+        //            inserts the canonical fields. Match that by removing any existing definitions
+        //            before the check-and-add step below.
+        if is_fed_1_subgraph {
+            entity_field_pos.remove(self)?;
+            service_field_pos.remove(self)?;
+        }
+
+        // Add or remove `Query._entities` (if applicable)
         if let Some(_entity_type) = self.entity_type()? {
             if entity_field_pos.try_get(self.schema()).is_none() {
                 entity_field_pos
@@ -1045,10 +1066,6 @@ impl FederationSchema {
         }
 
         // Add `Query._service` (if not already present)
-        let service_field_pos = ObjectFieldDefinitionPosition {
-            type_name: query_root_type_name,
-            field_name: FEDERATION_SERVICE_FIELD_NAME,
-        };
         if service_field_pos.try_get(self.schema()).is_none() {
             service_field_pos.insert(self, Component::new(self.service_field_spec()?.into()))?;
         }
@@ -1138,7 +1155,6 @@ impl FederationSchema {
         Ok(())
     }
 }
-
 #[cfg(test)]
 mod tests {
     use apollo_compiler::ast::OperationType;

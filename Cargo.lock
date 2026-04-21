@@ -470,6 +470,7 @@ dependencies = [
  "criterion",
  "memory-stats",
  "once_cell",
+ "rhai",
  "serde_json",
  "tokio",
  "tower",

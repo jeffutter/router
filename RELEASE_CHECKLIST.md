@@ -16,6 +16,9 @@ Release Checklist
 
 ## Building a Release
 
+> **Tip — see the current state first.**
+> Run `cargo xtask release status` at any time to get a snapshot of what's in flight: open release/prep/reconcile PRs per line (tip and any LTS lines like `2.10.x`), latest released tag, latest pre-release tag.  Useful before you start, whenever you come back to the process, and for sanity-checking "did I already do X?" moments.
+
 There are different types of releases:
 
 - **General release**
@@ -426,6 +429,9 @@ Start following the steps below to start a release PR.  The process is **not ful
 ### Reconciling `main` back to `dev`
 
 After the release has merged to `main`, reconcile those changes back into `dev` so ongoing development sees the released version bump and CHANGELOG entries.  This is a distinct step — the release is already out and artifacts are publishing to CircleCI/GitHub/Docker/Helm/crates.io independent of this reconciliation.
+
+> **Tip — automated by `cargo xtask release reconcile --version <X.Y.Z>`.**
+> The xtask walks the exact steps below: branches `reconcile-v<VERSION>` off the line's main, merges the line's dev into it, pushes, opens the PR into dev, sets auto-merge.  On a paired LTS line add `--line <major>.<minor>.x`.  On merge conflicts the xtask stops with instructions to resolve locally and re-run with `--resume`.  The manual flow below is the escape hatch and the reference for what the xtask actually does.
 
 We use a dedicated `reconcile-v${VERSION}` branch (rather than PR'ing `main` directly into `dev`) for two reasons: `dev` requires PR-based merges, and reconciliation conflicts — typically in `Cargo.toml` version numbers and `CHANGELOG.md` — are common enough that you'll want a local branch to resolve them properly with your usual tooling, rather than fighting the GitHub web UI.
 

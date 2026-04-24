@@ -6,30 +6,40 @@ use std::str::FromStr;
 use anyhow::anyhow;
 use anyhow::Result;
 
-/// A release line — either `tip` (plain `main`/`dev` pair) or an LTS line
-/// identified by its `<major>.<minor>.x` prefix.
+/// A release line.
+///
+/// - `Tip` — plain `main` + `dev` pair; the current in-flight major.
+/// - `Lts { major, minor }` — paired `main-v<M>.<N>.x` + `dev-v<M>.<N>.x`;
+///   a mature release line still accepting patches.
+/// - `Staging { major }` — `dev-v<M>.x` (and optionally `main-v<M>.x`);
+///   a pre-release line for a future major before any minor has been chosen.
+///   The main-side branch may not exist yet — no release has shipped.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Line {
     Tip,
     Lts { major: u64, minor: u64 },
+    Staging { major: u64 },
 }
 
 impl Line {
     /// Canonical identifier used in CLI flags, branch-name suffixes, and
     /// user-facing output.  `Tip` stringifies to `"tip"`; LTS stringifies to
-    /// `"<major>.<minor>.x"`.
+    /// `"<major>.<minor>.x"`; staging stringifies to `"<major>.x"`.
     pub fn id(&self) -> String {
         match self {
             Line::Tip => "tip".to_string(),
             Line::Lts { major, minor } => format!("{major}.{minor}.x"),
+            Line::Staging { major } => format!("{major}.x"),
         }
     }
 
-    /// The line's main (release-only) branch name on the remote.
+    /// The line's main (release-only) branch name on the remote.  For staging
+    /// lines this branch may not yet exist.
     pub fn main_branch(&self) -> String {
         match self {
             Line::Tip => "main".to_string(),
             Line::Lts { major, minor } => format!("main-v{major}.{minor}.x"),
+            Line::Staging { major } => format!("main-v{major}.x"),
         }
     }
 
@@ -38,17 +48,25 @@ impl Line {
         match self {
             Line::Tip => "dev".to_string(),
             Line::Lts { major, minor } => format!("dev-v{major}.{minor}.x"),
+            Line::Staging { major } => format!("dev-v{major}.x"),
         }
     }
 
-    /// Whether this line is an LTS line (vs. tip).
+    /// Whether this line is an LTS line (vs. tip or staging).
     pub fn is_lts(&self) -> bool {
         matches!(self, Line::Lts { .. })
     }
 
-    /// Try to parse a branch name of the form `main`, `dev`, `main-v<MAJ>.<MIN>.x`,
-    /// or `dev-v<MAJ>.<MIN>.x`.  Returns `Some((Line, is_main))` if recognized,
-    /// where `is_main` distinguishes the main-branch half from the dev-branch half.
+    /// Whether this line is a pre-release staging line.
+    pub fn is_staging(&self) -> bool {
+        matches!(self, Line::Staging { .. })
+    }
+
+    /// Try to parse a branch name of the form `main`, `dev`,
+    /// `main-v<MAJ>.<MIN>.x`, `dev-v<MAJ>.<MIN>.x`, `main-v<MAJ>.x`, or
+    /// `dev-v<MAJ>.x`.  Returns `Some((Line, is_main))` if recognized,
+    /// where `is_main` distinguishes the main-branch half from the dev-branch
+    /// half.
     pub fn parse_branch(branch: &str) -> Option<(Line, bool)> {
         if branch == "main" {
             return Some((Line::Tip, true));
@@ -65,13 +83,16 @@ impl Line {
             return None;
         };
 
-        // Expect "<major>.<minor>.x"
         let without_x = prefix.strip_suffix(".x")?;
         let mut parts = without_x.splitn(2, '.');
         let major: u64 = parts.next()?.parse().ok()?;
-        let minor: u64 = parts.next()?.parse().ok()?;
-
-        Some((Line::Lts { major, minor }, is_main))
+        match parts.next() {
+            None => Some((Line::Staging { major }, is_main)),
+            Some(minor_s) => {
+                let minor: u64 = minor_s.parse().ok()?;
+                Some((Line::Lts { major, minor }, is_main))
+            }
+        }
     }
 }
 
@@ -84,22 +105,22 @@ impl FromStr for Line {
         }
         let without_x = s
             .strip_suffix(".x")
-            .ok_or_else(|| anyhow!("line must be `tip` or `<major>.<minor>.x`: got {s:?}"))?;
+            .ok_or_else(|| anyhow!("line must be `tip`, `<major>.x`, or `<major>.<minor>.x`: got {s:?}"))?;
         let mut parts = without_x.splitn(2, '.');
         let major: u64 = parts
             .next()
             .ok_or_else(|| anyhow!("missing major in line {s:?}"))?
             .parse()
             .map_err(|e| anyhow!("invalid major in line {s:?}: {e}"))?;
-        let minor: u64 = parts
-            .next()
-            .ok_or_else(|| anyhow!("missing minor in line {s:?}"))?
-            .parse()
-            .map_err(|e| anyhow!("invalid minor in line {s:?}: {e}"))?;
-        if parts.next().is_some() {
-            return Err(anyhow!("line must be `<major>.<minor>.x`: got {s:?}"))
+        match parts.next() {
+            None => Ok(Line::Staging { major }),
+            Some(minor_s) => {
+                let minor: u64 = minor_s
+                    .parse()
+                    .map_err(|e| anyhow!("invalid minor in line {s:?}: {e}"))?;
+                Ok(Line::Lts { major, minor })
+            }
         }
-        Ok(Line::Lts { major, minor })
     }
 }
 
@@ -219,5 +240,28 @@ mod tests {
         assert!(Line::from_str("2.10").is_err()); // missing .x
         assert!(Line::from_str("2.10.5").is_err()); // too specific (version, not line)
         assert!(Line::from_str("v2.10.x").is_err()); // has v prefix
+    }
+
+    #[test]
+    fn staging_round_trip() {
+        let line = Line::Staging { major: 3 };
+        assert_eq!(line.id(), "3.x");
+        assert_eq!(line.main_branch(), "main-v3.x");
+        assert_eq!(line.dev_branch(), "dev-v3.x");
+        assert!(!line.is_lts());
+        assert!(line.is_staging());
+        assert_eq!(Line::from_str("3.x").unwrap(), line);
+    }
+
+    #[test]
+    fn parse_branch_staging() {
+        assert_eq!(
+            Line::parse_branch("dev-v3.x"),
+            Some((Line::Staging { major: 3 }, false))
+        );
+        assert_eq!(
+            Line::parse_branch("main-v3.x"),
+            Some((Line::Staging { major: 3 }, true))
+        );
     }
 }

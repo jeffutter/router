@@ -49,15 +49,18 @@ impl Status {
         if self.json {
             print_json(&filtered, &self.common.repo, &self.common.origin)?;
         } else {
-            print_human(&filtered, &self.common.repo, &self.common.origin);
+            print_human(&filtered, &self.common.repo, &self.common.origin, self.no_fetch);
         }
 
         Ok(())
     }
 }
 
-fn print_human(state: &State, repo: &str, origin: &str) {
+fn print_human(state: &State, repo: &str, origin: &str, no_fetch: bool) {
     println!("Release state — {repo} ({origin})");
+    if no_fetch {
+        println!("  (local state — did not `git fetch`; pass without --no-fetch for fresh data)");
+    }
     println!();
 
     if state.lines.is_empty() {
@@ -86,9 +89,15 @@ fn print_line_human(ls: &LineState) {
         .map(|v| format!("v{v}"))
         .unwrap_or_else(|| "—".to_string());
 
-    let lts_marker = if ls.line.line.is_lts() { "   LTS" } else { "" };
+    let marker = if ls.line.line.is_lts() {
+        "   LTS"
+    } else if ls.line.line.is_staging() {
+        "   staging"
+    } else {
+        ""
+    };
 
-    println!("  {line_id} ({branches}){lts_marker}");
+    println!("  {line_id} ({branches}){marker}");
     println!("    latest released: {tag}");
 
     if ls.in_progress.is_empty() {
@@ -151,6 +160,7 @@ struct JsonLine<'a> {
     main_branch: String,
     dev_branch: String,
     is_lts: bool,
+    is_staging: bool,
     latest_release: Option<String>,
     latest_prerelease: Option<String>,
     in_progress: Vec<JsonVersionWork<'a>>,
@@ -174,6 +184,7 @@ fn print_json(state: &State, repo: &str, origin: &str) -> Result<()> {
             main_branch: ls.line.line.main_branch(),
             dev_branch: ls.line.line.dev_branch(),
             is_lts: ls.line.line.is_lts(),
+            is_staging: ls.line.line.is_staging(),
             latest_release: ls.latest_release.as_ref().map(|v| v.to_string()),
             latest_prerelease: ls.latest_prerelease.as_ref().map(|v| v.to_string()),
             in_progress: ls

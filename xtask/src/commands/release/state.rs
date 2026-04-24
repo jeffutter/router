@@ -157,7 +157,12 @@ fn pair_lines(branches: &[String]) -> (Vec<ReleaseLine>, Vec<String>) {
     for line in all_line_keys {
         let has_main = mains.contains_key(&line);
         let has_dev = devs.contains_key(&line);
-        if has_main && has_dev {
+
+        // Staging lines are allowed to exist with dev-only (no main) — they
+        // haven't shipped a first release yet.
+        let staging_solo_ok = matches!(line, Line::Staging { .. }) && has_dev && !has_main;
+
+        if (has_main && has_dev) || staging_solo_ok {
             lines.push(ReleaseLine { line });
         } else if has_main {
             unpaired.push(mains[&line].clone());
@@ -166,17 +171,23 @@ fn pair_lines(branches: &[String]) -> (Vec<ReleaseLine>, Vec<String>) {
         }
     }
 
-    // Stable ordering: tip first, then LTS lines descending by version.
-    lines.sort_by(|a, b| match (&a.line, &b.line) {
-        (Line::Tip, Line::Tip) => std::cmp::Ordering::Equal,
-        (Line::Tip, _) => std::cmp::Ordering::Less,
-        (_, Line::Tip) => std::cmp::Ordering::Greater,
-        (Line::Lts { major: am, minor: an }, Line::Lts { major: bm, minor: bn }) => {
-            (bm, bn).cmp(&(am, an))
-        }
-    });
+    // Stable ordering: tip first, then staging lines descending by major, then
+    // LTS lines descending by major+minor.
+    lines.sort_by(|a, b| line_order_key(&a.line).cmp(&line_order_key(&b.line)));
 
     (lines, unpaired)
+}
+
+/// Ordering key: lower sorts first.
+///   - Tip: (0, 0, 0)
+///   - Staging: (1, -major, 0)  — newer majors before older
+///   - LTS: (2, -major, -minor) — newer versions before older
+fn line_order_key(line: &Line) -> (u8, i64, i64) {
+    match line {
+        Line::Tip => (0, 0, 0),
+        Line::Staging { major } => (1, -(*major as i64), 0),
+        Line::Lts { major, minor } => (2, -(*major as i64), -(*minor as i64)),
+    }
 }
 
 /// Branches whose name parses as `<major>.<minor>.<patch>` — version branches
@@ -239,6 +250,13 @@ fn any_lts_claims(major: u64, minor: u64, all_lines: &[ReleaseLine]) -> bool {
     })
 }
 
+/// Does any Staging line in `all_lines` claim this `major`?
+fn any_staging_claims(major: u64, all_lines: &[ReleaseLine]) -> bool {
+    all_lines
+        .iter()
+        .any(|rl| matches!(rl.line, Line::Staging { major: m } if m == major))
+}
+
 fn build_line_state(
     line: ReleaseLine,
     all_lines: &[ReleaseLine],
@@ -246,12 +264,21 @@ fn build_line_state(
     tags: &[Version],
     prs: &[PrSummary],
 ) -> LineState {
-    // A version belongs to an LTS line if major+minor match exactly; otherwise
-    // to tip (as long as no LTS line claims that major+minor).
+    // Attribution rules:
+    //   - LTS line `<maj>.<min>.x`:  claims versions where maj+min match exactly.
+    //   - Staging line `<maj>.x`:    claims versions where maj matches AND no LTS line
+    //                                claims that specific maj+min.
+    //   - Tip:                       claims versions that no Staging or LTS line claims.
     let claims = |v: &Version| -> bool {
         match line.line {
             Line::Lts { major, minor } => v.major == major && v.minor == minor,
-            Line::Tip => !any_lts_claims(v.major, v.minor, all_lines),
+            Line::Staging { major } => {
+                v.major == major && !any_lts_claims(v.major, v.minor, all_lines)
+            }
+            Line::Tip => {
+                !any_lts_claims(v.major, v.minor, all_lines)
+                    && !any_staging_claims(v.major, all_lines)
+            }
         }
     };
 

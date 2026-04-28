@@ -12,6 +12,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use buildstructor::buildstructor;
+use flate2::read::GzDecoder;
 use fred::clients::Client as RedisClient;
 use fred::interfaces::ClientLike;
 use fred::interfaces::KeysInterface;
@@ -694,8 +695,26 @@ impl IntegrationTest {
         Mock::given(method(Method::POST))
             .and(path("/v1/metrics"))
             .and(move |req: &wiremock::Request| {
-                // Decode the OTLP request and forward to the channel
-                if let Ok(msg) = ExportMetricsServiceRequest::decode(req.body.as_ref()) {
+                // Decompress gzip body if Content-Encoding indicates it, then decode as protobuf
+                let body: &[u8] = req.body.as_ref();
+                let is_gzip = req
+                    .headers
+                    .get("content-encoding")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|v| v.contains("gzip"))
+                    .unwrap_or(false);
+                let decoded = if is_gzip {
+                    let mut decoder = GzDecoder::new(body);
+                    let mut buf = Vec::new();
+                    std::io::Read::read_to_end(&mut decoder, &mut buf)
+                        .ok()
+                        .map(|_| buf)
+                } else {
+                    Some(body.to_vec())
+                };
+                if let Some(bytes) = decoded
+                    && let Ok(msg) = ExportMetricsServiceRequest::decode(bytes.as_slice())
+                {
                     let _ = apollo_otlp_metrics_tx.try_send(msg);
                 }
                 // Always match so we return 200 OK
@@ -1362,6 +1381,25 @@ impl IntegrationTest {
                 error_logs.join("\n"),
                 self.logs.join("\n")
             );
+        }
+    }
+
+    /// Reads metrics from the live endpoint via `IntegrationTest::get_metrics_response` and prints
+    /// them out line by line.
+    ///
+    /// Useful for debugging.
+    #[allow(unused)]
+    pub async fn print_metrics(&self) {
+        if let Ok(metrics) = self
+            .get_metrics_response()
+            .await
+            .expect("failed to fetch metrics")
+            .text()
+            .await
+        {
+            for line in metrics.split("\n") {
+                println!("{line}");
+            }
         }
     }
 

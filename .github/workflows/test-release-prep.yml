@@ -28,7 +28,8 @@ jobs:
   test-prep:
     runs-on: ubuntu-latest
     permissions:
-      contents: read   # read-only; no push, no commit, no PR
+      contents: write          # to push the prep branch
+      pull-requests: write     # to open the prep PR
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -83,7 +84,64 @@ jobs:
           fi
           echo "Found v${VERSION} heading in CHANGELOG.md"
 
+      - name: Commit prep on a fresh branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          PREP_BRANCH="prep-${{ steps.vars.outputs.version }}"
+          git checkout -b "$PREP_BRANCH"
+          git add -A
+          git commit -m "prep release: v${{ steps.vars.outputs.version }}"
+          echo "PREP_BRANCH=$PREP_BRANCH" >> "$GITHUB_ENV"
+
+      - name: Push prep branch
+        run: git push origin "$PREP_BRANCH"
+
+      - name: Extract this release's CHANGELOG section
+        run: |
+          perl -0777 \
+            -sne 'print "$1\n" if m{
+              (?:\#\s\[v?\Q$version\E\]\s.*?\n$)
+              \s*
+              (.*?)
+              \s*
+              (?=^\#\s\[[^\]]+\]\s)
+            }msx' -- \
+              -version="${{ steps.vars.outputs.version }}" \
+              CHANGELOG.md > this_release.md
+          echo "::group::this_release.md preview"
+          cat this_release.md
+          echo "::endgroup::"
+
+      - name: Open prep PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.vars.outputs.version }}"
+          BODY=$(cat <<EOF
+          > **Note**
+          >
+          > When approved, this PR will merge into **the \`$VERSION\` branch** which will — upon being approved itself — merge into \`main\`.
+          >
+          > **Things to review in this PR**:
+          >  - Changelog correctness (preview below; see _Files Changed_ for the true reality)
+          >  - Version bumps
+          >  - That it targets the right release branch (\`$VERSION\` in this case!)
+          >
+          > Opened automatically by the \`test-release-prep\` workflow on the throwaway \`abernix/test-prep-action-*\` branch.
+          ---
+          $(cat this_release.md)
+          EOF
+          )
+          gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --base "$VERSION" \
+            --head "$PREP_BRANCH" \
+            --title "prep release: v$VERSION" \
+            --body "$BODY"
+
       - name: Done
         run: |
-          echo "Prep would succeed.  Diff above is what would be committed."
-          echo "Nothing was pushed; nothing was opened."
+          echo "Prep PR opened from $PREP_BRANCH into ${{ steps.vars.outputs.version }}."
+          echo "If this looks right, you can squash-merge it as the real prep PR."
+          echo "If it doesn't, close it and delete the prep branch."

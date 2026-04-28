@@ -1,4 +1,4 @@
-### Add `intern_strings` configuration option for the Rhai plugin
+### Add `intern_strings` configuration option for the Rhai plugin ([PR #9070](https://github.com/apollographql/router/pull/9070))
 
 The Rhai plugin now exposes an `intern_strings` option that controls Rhai's internal string interning. Under high concurrency, threads encountering new strings must acquire a write lock, which can serialize Rhai execution across concurrent requests.
 
@@ -13,6 +13,6 @@ rhai:
 
 String interning can alleviate memory allocation and make string equality checks a little faster. For deployments serving many concurrent requests, the cost likely outweighs the benefit, so we recommend experimenting with `intern_strings: false` and observing if it improves performance.
 
-The default (`true`) preserves the existing behaviour.
+The default (`true`) preserves the existing behavior.
 
 By [@theJC](https://github.com/theJC) in https://github.com/apollographql/router/pull/9070

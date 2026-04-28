@@ -1,9 +1,10 @@
-### Add support for sending Apollo OTel metrics and traces via HTTP ([PR #9055](https://github.com/apollographql/router/pull/9055))
+### Add experimental HTTP transport for Apollo OTLP metrics and traces ([PR #9055](https://github.com/apollographql/router/pull/9055))
 
-Adds experimental support for sending Apollo OTLP metrics and traces via HTTP. This can be enabled using the config values:
-- telemetry.apollo.experimental_otlp_tracing_protocol
-- telemetry.apollo.experimental_otlp_metrics_protocol
+The router can now send Apollo OTLP metrics and traces over HTTP (experimental). Enable it with these config values:
 
-GRPC is still the preferred method of sending OTLP metrics to Apollo, but we are adding this to support customers who cannot use GRPC.
+- `telemetry.apollo.experimental_otlp_tracing_protocol`
+- `telemetry.apollo.experimental_otlp_metrics_protocol`
+
+gRPC remains the preferred transport for Apollo OTLP, but HTTP is available for deployments that can't use gRPC.
 
 By [@bonnici](https://github.com/bonnici) in https://github.com/apollographql/router/pull/9055

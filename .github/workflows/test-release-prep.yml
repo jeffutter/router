@@ -1,0 +1,89 @@
+# Test workflow — proves the `cargo xtask release prepare` step can run on a
+# GitHub Actions runner with the target branch's pinned toolchain.
+#
+# READ-ONLY by design.  Does not commit, push, or open any PR.  Just runs
+# `release prepare` against the current ref and dumps the resulting diff to
+# the action log so a human can eyeball what would have been committed.
+#
+# This file lives only on `abernix/test-prep-action-2.14.0` for now — it is
+# NOT meant to land on `2.14.0`, `dev`, or `main`.  Once we're confident the
+# pattern works, the next iteration will add the actual commit + push + PR
+# steps gated behind a separate input flag.
+
+name: Test release prep
+
+# Triggered by push to `abernix/test-prep-action-*` branches so we don't
+# need this workflow registered on `dev` to fire it.  Push the side branch
+# (with whatever changes you want to test against) and it runs.
+#
+# Version is parsed from the branch name suffix: `abernix/test-prep-action-2.14.0`
+# → version `2.14.0`.
+
+on:
+  push:
+    branches:
+      - "abernix/test-prep-action-*"
+
+jobs:
+  test-prep:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read   # read-only; no push, no commit, no PR
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from branch name
+        id: vars
+        run: |
+          # branch is like abernix/test-prep-action-2.14.0 — last segment after `-`
+          VERSION="${GITHUB_REF_NAME##*-}"
+          echo "Resolved version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install dev environment (mise)
+        uses: jdx/mise-action@v4
+
+      - name: Show toolchain
+        run: |
+          rustc --version
+          cargo --version
+          helm version --short
+          helm-docs --version || true
+          cargo about --version || true
+          cargo deny --version || true
+
+      - name: Run release prepare (no commit, no push)
+        run: cargo xtask release prepare ${{ steps.vars.outputs.version }}
+
+      - name: Show resulting diff
+        run: |
+          echo "::group::git diff"
+          git diff
+          echo "::endgroup::"
+          echo "::group::git status"
+          git status
+          echo "::endgroup::"
+
+      - name: Verify diff is non-empty
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "::error::release prepare produced no changes — that's suspicious."
+            exit 1
+          fi
+
+      - name: Verify CHANGELOG.md gained a v${{ steps.vars.outputs.version }} entry
+        run: |
+          VERSION="${{ steps.vars.outputs.version }}"
+          if ! grep -q "^# \[${VERSION}\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md is missing the v${VERSION} heading."
+            exit 1
+          fi
+          echo "Found v${VERSION} heading in CHANGELOG.md"
+
+      - name: Done
+        run: |
+          echo "Prep would succeed.  Diff above is what would be committed."
+          echo "Nothing was pushed; nothing was opened."

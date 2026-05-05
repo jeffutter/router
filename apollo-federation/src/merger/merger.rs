@@ -1241,7 +1241,7 @@ impl Merger {
                 self.error_reporter.add_hint(CompositionHint {
                     definition: HintCode::FromSubgraphDoesNotExist.definition(),
                     message: format!(
-                        "Source subgraph \"{}\" for field \"{}\" on subgraph \"{}\" does not exist. {extra_msg}",
+                        "Source subgraph \"{}\" for field \"{}\" on subgraph \"{}\" does not exist.{extra_msg}",
                         source_subgraph_name, dest, subgraph_name
                     ),
                     locations: Default::default(),

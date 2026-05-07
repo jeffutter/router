@@ -103,9 +103,9 @@ impl FromStr for Line {
         if s == "tip" {
             return Ok(Line::Tip);
         }
-        let without_x = s
-            .strip_suffix(".x")
-            .ok_or_else(|| anyhow!("line must be `tip`, `<major>.x`, or `<major>.<minor>.x`: got {s:?}"))?;
+        let without_x = s.strip_suffix(".x").ok_or_else(|| {
+            anyhow!("line must be `tip`, `<major>.x`, or `<major>.<minor>.x`: got {s:?}")
+        })?;
         let mut parts = without_x.splitn(2, '.');
         let major: u64 = parts
             .next()
@@ -199,7 +199,10 @@ mod tests {
 
     #[test]
     fn lts_round_trip() {
-        let line = Line::Lts { major: 2, minor: 10 };
+        let line = Line::Lts {
+            major: 2,
+            minor: 10,
+        };
         assert_eq!(line.id(), "2.10.x");
         assert_eq!(line.main_branch(), "main-v2.10.x");
         assert_eq!(line.dev_branch(), "dev-v2.10.x");
@@ -217,11 +220,23 @@ mod tests {
     fn parse_branch_lts() {
         assert_eq!(
             Line::parse_branch("main-v2.10.x"),
-            Some((Line::Lts { major: 2, minor: 10 }, true))
+            Some((
+                Line::Lts {
+                    major: 2,
+                    minor: 10
+                },
+                true
+            ))
         );
         assert_eq!(
             Line::parse_branch("dev-v2.10.x"),
-            Some((Line::Lts { major: 2, minor: 10 }, false))
+            Some((
+                Line::Lts {
+                    major: 2,
+                    minor: 10
+                },
+                false
+            ))
         );
     }
 

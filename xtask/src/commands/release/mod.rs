@@ -1,10 +1,12 @@
 mod common;
+mod new;
 mod pre_verify;
 mod prepare;
 mod reconcile;
 mod state;
 mod status;
 
+pub(crate) use new::New;
 pub(crate) use pre_verify::PreVerify;
 pub(crate) use prepare::Prepare;
 pub(crate) use reconcile::Reconcile;
@@ -14,6 +16,9 @@ use anyhow::Result;
 
 #[derive(Debug, clap::Subcommand)]
 pub enum Command {
+    /// Cut a fresh release branch and open the draft release PR.
+    New(New),
+
     /// Prepare a new release
     Prepare(Prepare),
 
@@ -30,6 +35,7 @@ pub enum Command {
 impl Command {
     pub fn run(&self) -> Result<()> {
         match self {
+            Command::New(command) => command.run(),
             Command::Prepare(command) => command.run(),
             Command::PreVerify => PreVerify::run(),
             Command::Reconcile(command) => command.run(),

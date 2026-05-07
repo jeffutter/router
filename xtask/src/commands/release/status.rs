@@ -49,7 +49,12 @@ impl Status {
         if self.json {
             print_json(&filtered, &self.common.repo, &self.common.origin)?;
         } else {
-            print_human(&filtered, &self.common.repo, &self.common.origin, self.no_fetch);
+            print_human(
+                &filtered,
+                &self.common.repo,
+                &self.common.origin,
+                self.no_fetch,
+            );
         }
 
         Ok(())
@@ -82,7 +87,11 @@ fn print_human(state: &State, repo: &str, origin: &str, no_fetch: bool) {
 
 fn print_line_human(ls: &LineState) {
     let line_id = ls.line.line.id();
-    let branches = format!("{} / {}", ls.line.line.main_branch(), ls.line.line.dev_branch());
+    let branches = format!(
+        "{} / {}",
+        ls.line.line.main_branch(),
+        ls.line.line.dev_branch()
+    );
     let tag = ls
         .latest_release
         .as_ref()
@@ -116,7 +125,11 @@ fn print_version_work_human(vw: &VersionWork) {
     let mut parts: Vec<String> = Vec::new();
 
     if let Some(pr) = &vw.release_pr {
-        parts.push(format!("release PR #{} ({})", pr.number, pr_state_label(pr)));
+        parts.push(format!(
+            "release PR #{} ({})",
+            pr.number,
+            pr_state_label(pr)
+        ));
     }
     if let Some(pr) = &vw.prep_pr {
         parts.push(format!("prep PR #{}", pr.number));

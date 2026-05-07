@@ -138,8 +138,7 @@ impl Reconcile {
             .with_initial_text(default)
             .interact_text()?;
 
-        Version::parse(input.trim())
-            .map_err(|e| anyhow!("invalid version `{input}`: {e}"))
+        Version::parse(input.trim()).map_err(|e| anyhow!("invalid version `{input}`: {e}"))
     }
 
     fn check_no_existing_reconcile(&self, _line: &Line, version: &Version) -> Result<()> {
@@ -185,13 +184,14 @@ impl Reconcile {
         let dev = line.dev_branch();
         let reconcile_branch = format!("reconcile-v{version}");
 
-        let commit_message = format!(
-            "Reconcile `{dev}` after merge to `{main}` for v{version}"
-        );
+        let commit_message = format!("Reconcile `{dev}` after merge to `{main}` for v{version}");
 
         if self.dry_run {
             eprintln!("(dry-run) would run:");
-            eprintln!("  git fetch --tags --prune {origin}", origin = self.common.origin);
+            eprintln!(
+                "  git fetch --tags --prune {origin}",
+                origin = self.common.origin
+            );
             eprintln!("  git checkout {main}");
             eprintln!("  git pull {origin} {main}", origin = self.common.origin);
             eprintln!("  git checkout -b {reconcile_branch}");
@@ -234,7 +234,10 @@ impl Reconcile {
     fn do_push_and_pr(&self, line: &Line, version: &Version) -> Result<()> {
         let dev = line.dev_branch();
         let reconcile_branch = format!("reconcile-v{version}");
-        let pr_title = format!("Reconcile `{dev}` after merge to `{main}` for v{version}", main = line.main_branch());
+        let pr_title = format!(
+            "Reconcile `{dev}` after merge to `{main}` for v{version}",
+            main = line.main_branch()
+        );
         let pr_body = format!(
             "Follow-up to the v{version} release, bringing version bumps and changelog \
              updates from `{main}` into the `{dev}` branch.\n\n\

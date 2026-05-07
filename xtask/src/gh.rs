@@ -21,8 +21,8 @@ pub fn available() -> bool {
 /// Errors if `gh` isn't installed, if `gh auth token` fails, or if the token
 /// comes back empty (usually meaning the user hasn't run `gh auth login`).
 pub fn token() -> Result<String> {
-    let gh = which::which("gh")
-        .map_err(|_| anyhow!("the `gh` CLI is not installed or not on PATH"))?;
+    let gh =
+        which::which("gh").map_err(|_| anyhow!("the `gh` CLI is not installed or not on PATH"))?;
 
     let output = Command::new(gh)
         .args(["auth", "token"])
@@ -57,8 +57,8 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let gh = which::which("gh")
-        .map_err(|_| anyhow!("the `gh` CLI is not installed or not on PATH"))?;
+    let gh =
+        which::which("gh").map_err(|_| anyhow!("the `gh` CLI is not installed or not on PATH"))?;
 
     let status = Command::new(gh)
         .args(args)
@@ -83,8 +83,8 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let gh = which::which("gh")
-        .map_err(|_| anyhow!("the `gh` CLI is not installed or not on PATH"))?;
+    let gh =
+        which::which("gh").map_err(|_| anyhow!("the `gh` CLI is not installed or not on PATH"))?;
 
     let output = Command::new(gh)
         .args(args)

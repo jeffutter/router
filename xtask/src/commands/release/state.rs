@@ -108,11 +108,7 @@ pub fn detect_state(repo: &str, origin: &str) -> Result<State> {
 fn list_remote_branches(origin: &str) -> Result<Vec<String>> {
     let refspec = format!("refs/remotes/{origin}/");
     let output = std::process::Command::new(which::which("git")?)
-        .args([
-            "for-each-ref",
-            "--format=%(refname:short)",
-            &refspec,
-        ])
+        .args(["for-each-ref", "--format=%(refname:short)", &refspec])
         .output()?;
     if !output.status.success() {
         return Err(anyhow!(
@@ -148,11 +144,7 @@ fn pair_lines(branches: &[String]) -> (Vec<ReleaseLine>, Vec<String>) {
     let mut lines: Vec<ReleaseLine> = Vec::new();
     let mut unpaired: Vec<String> = Vec::new();
 
-    let all_line_keys: HashSet<Line> = mains
-        .keys()
-        .chain(devs.keys())
-        .cloned()
-        .collect();
+    let all_line_keys: HashSet<Line> = mains.keys().chain(devs.keys()).cloned().collect();
 
     for line in all_line_keys {
         let has_main = mains.contains_key(&line);
@@ -245,9 +237,9 @@ fn list_open_prs(repo: &str) -> Result<Vec<PrSummary>> {
 
 /// Does any LTS line in `all_lines` claim this `major.minor`?
 fn any_lts_claims(major: u64, minor: u64, all_lines: &[ReleaseLine]) -> bool {
-    all_lines.iter().any(|rl| {
-        matches!(rl.line, Line::Lts { major: m, minor: n } if m == major && n == minor)
-    })
+    all_lines
+        .iter()
+        .any(|rl| matches!(rl.line, Line::Lts { major: m, minor: n } if m == major && n == minor))
 }
 
 /// Does any Staging line in `all_lines` claim this `major`?
@@ -298,10 +290,7 @@ fn build_line_state(
         .cloned();
 
     // Version branches attributed to this line.
-    let line_versions: Vec<&Version> = version_branches
-        .iter()
-        .filter(|v| claims(v))
-        .collect();
+    let line_versions: Vec<&Version> = version_branches.iter().filter(|v| claims(v)).collect();
 
     let in_progress = line_versions
         .into_iter()
@@ -320,7 +309,12 @@ fn build_line_state(
                 .cloned();
             let latest_prerelease_for_version = tags
                 .iter()
-                .filter(|v| v.major == version.major && v.minor == version.minor && v.patch == version.patch && !v.pre.is_empty())
+                .filter(|v| {
+                    v.major == version.major
+                        && v.minor == version.minor
+                        && v.patch == version.patch
+                        && !v.pre.is_empty()
+                })
                 .max()
                 .cloned();
             VersionWork {
@@ -331,7 +325,12 @@ fn build_line_state(
                 latest_prerelease: latest_prerelease_for_version,
             }
         })
-        .filter(|vw| vw.release_pr.is_some() || vw.prep_pr.is_some() || vw.reconcile_pr.is_some() || vw.latest_prerelease.is_some())
+        .filter(|vw| {
+            vw.release_pr.is_some()
+                || vw.prep_pr.is_some()
+                || vw.reconcile_pr.is_some()
+                || vw.latest_prerelease.is_some()
+        })
         .collect();
 
     LineState {
@@ -371,15 +370,26 @@ mod tests {
         assert_eq!(lines.len(), 3);
         // Sorted: tip first, then LTS descending by version.
         assert_eq!(lines[0].line, Line::Tip);
-        assert_eq!(lines[1].line, Line::Lts { major: 2, minor: 13 });
-        assert_eq!(lines[2].line, Line::Lts { major: 2, minor: 10 });
+        assert_eq!(
+            lines[1].line,
+            Line::Lts {
+                major: 2,
+                minor: 13
+            }
+        );
+        assert_eq!(
+            lines[2].line,
+            Line::Lts {
+                major: 2,
+                minor: 10
+            }
+        );
         assert!(unpaired.is_empty());
     }
 
     #[test]
     fn pair_lines_unpaired_warning() {
-        let (lines, unpaired) =
-            pair_lines(&[b("main"), b("dev"), b("main-v2.9.x")]);
+        let (lines, unpaired) = pair_lines(&[b("main"), b("dev"), b("main-v2.9.x")]);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].line, Line::Tip);
         assert_eq!(unpaired, vec![b("main-v2.9.x")]);
@@ -400,4 +410,3 @@ mod tests {
         assert_eq!(v[1], Version::parse("2.15.0").unwrap());
     }
 }
-

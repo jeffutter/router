@@ -80,12 +80,6 @@ pub struct New {
     #[clap(long)]
     pub from: Option<String>,
 
-    /// Skip the empty-commit shim even when there's no diff.  The PR open
-    /// will fail in that case — only useful when you know the cut already
-    /// has commits the line's main doesn't.
-    #[clap(long)]
-    pub no_empty_commit_shim: bool,
-
     /// On failure, keep the isolated worktree directory for debugging
     /// instead of cleaning it up.  Always passed-through behavior on
     /// success (cleans up).
@@ -364,13 +358,6 @@ impl New {
         line: &Line,
         version: &Version,
     ) -> Result<()> {
-        if self.no_empty_commit_shim {
-            eprintln!(
-                "{}",
-                style("(--no-empty-commit-shim) skipping shim check").dim()
-            );
-            return Ok(());
-        }
         let main = line.main_branch();
         let range = format!(
             "{origin}/{main}..HEAD",

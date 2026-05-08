@@ -1,5 +1,6 @@
 mod federation_demo;
 pub mod gh;
+pub mod worktree;
 
 use std::env;
 use std::process::Child;

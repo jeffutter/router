@@ -21,7 +21,10 @@ use std::str::FromStr;
 
 use anyhow::Result;
 use anyhow::anyhow;
+use console::style;
 use dialoguer::Confirm;
+use dialoguer::Input;
+use dialoguer::Select;
 use dialoguer::theme::ColorfulTheme;
 use semver::Version;
 use xtask::*;
@@ -57,13 +60,17 @@ impl FromStr for NewVersion {
 }
 
 /// Cut a new release branch and open the draft release PR.
+///
+/// Operates inside an isolated `git worktree` (sibling to your repo),
+/// so your primary checkout's branch and working tree are never touched.
 #[derive(Debug, clap::Parser)]
 pub struct New {
     #[command(flatten)]
     pub common: ReleaseCommonArgs,
 
     /// `patch`, `minor`, `major`, or a specific version like `2.14.1`.
-    pub version: NewVersion,
+    /// If omitted and running interactively, you'll be prompted.
+    pub version: Option<NewVersion>,
 
     /// Override the starting commit-ish.  Defaults differ by line:
     ///   - Tip patch       → latest release tag (e.g., `v2.14.0`)
@@ -79,6 +86,17 @@ pub struct New {
     #[clap(long)]
     pub no_empty_commit_shim: bool,
 
+    /// On failure, keep the isolated worktree directory for debugging
+    /// instead of cleaning it up.  Always passed-through behavior on
+    /// success (cleans up).
+    #[clap(long)]
+    pub keep_worktree: bool,
+
+    /// Override the worktree directory location.  Defaults to a sibling
+    /// of the project root, named `<project>-release-new-<version>`.
+    #[clap(long)]
+    pub worktree_path: Option<std::path::PathBuf>,
+
     /// Print the exact commands without executing.
     #[clap(long)]
     pub dry_run: bool,
@@ -86,47 +104,135 @@ pub struct New {
 
 impl New {
     pub fn run(&self) -> Result<()> {
+        // Cheap validations first so a misconfigured invocation errors
+        // before we touch the network.
         let line = self.resolve_line()?;
-        let target = self.resolve_target_version(&line)?;
-        let from = self.resolve_from(&line, &self.version)?;
+        let kind = self.resolve_kind()?;
 
-        eprintln!(
-            "Cut new release: v{target} on line `{line}`  (base: `{from}`, target main: `{main}`)",
-            main = line.main_branch()
-        );
+        // Now that we know the intent is valid, fetch so latest tags +
+        // remote branches are fresh.  Touches `.git` (shared with
+        // worktrees) but does NOT mutate the user's working tree or HEAD.
+        if !self.dry_run {
+            self.fetch()?;
+        }
+
+        let target = resolve_target_version(&line, &kind, |l| self.latest_release_on_line(l))?;
+        let from = self.resolve_from(&line, &kind)?;
+
+        self.print_plan(&line, &kind, &target, &from);
 
         if self.dry_run {
-            eprintln!("(dry-run) — no commands will execute");
+            self.print_dry_run_steps(&line, &target, &from);
+            return Ok(());
         }
 
-        if !self.dry_run {
-            self.ensure_pristine_checkout()?;
-            self.check_no_existing_release_pr(&target)?;
-        }
+        // Pre-flight: open release PR for this version already?
+        self.check_no_existing_release_pr(&target)?;
 
-        if !self.common.non_interactive && !self.dry_run {
+        if !self.common.non_interactive {
             let proceed = Confirm::with_theme(&ColorfulTheme::default())
                 .with_prompt(format!(
-                    "Cut `{target}` from `{from}` and open draft release PR into `{main}`?",
-                    main = line.main_branch()
+                    "Cut {} from {} and open draft release PR into {}?",
+                    style(format!("v{target}")).cyan().bold(),
+                    style(&from).cyan(),
+                    style(line.main_branch()).cyan(),
                 ))
                 .default(true)
                 .interact()?;
             if !proceed {
-                eprintln!("Aborted by user.");
+                eprintln!("{}", style("Aborted by user.").yellow());
                 return Ok(());
             }
         }
 
-        self.cut_branch(&line, &target, &from)?;
-        self.maybe_add_empty_commit(&line, &target)?;
-        self.push_branch(&target)?;
-        self.open_release_pr(&line, &target)?;
+        // All destructive ops happen in an isolated worktree.  Drop cleans up
+        // unless we mark `keep` after a failure (or --keep-worktree).
+        let wt_path = self.worktree_path.clone().unwrap_or_else(|| {
+            xtask::worktree::default_path(
+                PKG_PROJECT_ROOT.as_std_path(),
+                &format!("release-new-{target}"),
+            )
+        });
+        eprintln!(
+            "{} {}",
+            style("Creating isolated worktree at").dim(),
+            style(wt_path.display()).cyan(),
+        );
+        let mut wt = xtask::worktree::WorkTree::create(wt_path.clone(), &from)?;
+        if self.keep_worktree {
+            wt.keep();
+        }
+
+        let result = self.execute_in_worktree(&wt, &line, &target);
+        if result.is_err() && !self.keep_worktree {
+            eprintln!(
+                "{}",
+                style(format!(
+                    "→ keeping worktree at {} for inspection",
+                    wt.path().display()
+                ))
+                .yellow()
+            );
+            wt.keep();
+        }
+        result?;
+
+        eprintln!(
+            "{}",
+            style(format!("Done.  Draft release PR opened for v{target}.")).green()
+        );
+        Ok(())
+    }
+
+    /// Run the destructive steps inside the isolated worktree.  Split out so
+    /// that on failure we can choose to keep the worktree for debugging.
+    fn execute_in_worktree(
+        &self,
+        wt: &xtask::worktree::WorkTree,
+        line: &Line,
+        target: &Version,
+    ) -> Result<()> {
+        let branch = target.to_string();
+
+        // Worktree was created at `from` — now create the version branch on top.
+        wt.git(["checkout", "-b", &branch])?;
+
+        // Empty-commit shim if needed.
+        self.maybe_add_empty_commit(wt, line, target)?;
+
+        // Push the new branch.
+        wt.git([
+            "push",
+            "--set-upstream",
+            self.common.origin.as_str(),
+            &branch,
+        ])?;
+
+        // Open the PR.  `gh` doesn't care about cwd when --repo is passed.
+        self.open_release_pr(line, target)?;
 
         Ok(())
     }
 
-    /// Resolve the line — flag, current branch, or wizard.
+    /// Run `git fetch --tags --prune <origin>` from the user's main checkout.
+    /// Doesn't change HEAD or working tree — purely updates remote refs.
+    fn fetch(&self) -> Result<()> {
+        eprintln!(
+            "{} {}",
+            style("Fetching from").dim(),
+            style(&self.common.origin).cyan(),
+        );
+        let status = std::process::Command::new(which::which("git")?)
+            .current_dir(&*PKG_PROJECT_ROOT)
+            .args(["fetch", "--tags", "--prune", self.common.origin.as_str()])
+            .status()?;
+        if !status.success() {
+            return Err(anyhow!("git fetch failed"));
+        }
+        Ok(())
+    }
+
+    /// Resolve the line — flag, current branch, or default to tip.
     fn resolve_line(&self) -> Result<Line> {
         if let Some(line) = self.common.resolve_line() {
             return Ok(line);
@@ -140,21 +246,39 @@ impl New {
         Ok(Line::Tip)
     }
 
-    /// Resolve the target version: explicit `--version` semver, or compute
-    /// from `--patch`/`--minor`/`--major` against the line's latest tag.
-    fn resolve_target_version(&self, line: &Line) -> Result<Version> {
-        match &self.version {
-            NewVersion::Specific(v) => Ok(v.clone()),
-            kind => {
-                let latest = self.latest_release_on_line(line)?.ok_or_else(|| {
-                    anyhow!(
-                        "no prior release tag found on line `{line}` to bump from; \
-                         pass an explicit version like `2.14.1` instead of `{:?}`",
-                        kind
-                    )
-                })?;
-                bump(&latest, kind)
+    /// Resolve the version kind — `--version` arg, current state, or interactive prompt.
+    fn resolve_kind(&self) -> Result<NewVersion> {
+        if let Some(kind) = &self.version {
+            return Ok(kind.clone());
+        }
+        if self.common.non_interactive {
+            return Err(anyhow!(
+                "version is required in non-interactive mode; pass `patch`, `minor`, `major`, or a specific version like `2.14.1`"
+            ));
+        }
+        // Interactive: present a Select.
+        let items = [
+            "Patch  (e.g., bump 2.14.0 → 2.14.1)",
+            "Minor  (e.g., bump 2.14.0 → 2.15.0)",
+            "Major  (e.g., bump 2.14.0 → 3.0.0)",
+            "Specific version...",
+        ];
+        let selection = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("What kind of release?")
+            .items(&items)
+            .default(0)
+            .interact()?;
+        match selection {
+            0 => Ok(NewVersion::Patch),
+            1 => Ok(NewVersion::Minor),
+            2 => Ok(NewVersion::Major),
+            3 => {
+                let input: String = Input::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Specific version (e.g., 2.14.1)")
+                    .interact_text()?;
+                NewVersion::from_str(input.trim())
             }
+            _ => unreachable!(),
         }
     }
 
@@ -205,18 +329,6 @@ impl New {
         Ok(default)
     }
 
-    fn ensure_pristine_checkout(&self) -> Result<()> {
-        let output = std::process::Command::new(which::which("git")?)
-            .args(["status", "--untracked-files=no", "--porcelain"])
-            .output()?;
-        if !output.stdout.is_empty() {
-            return Err(anyhow!(
-                "git workspace is not clean; commit or stash changes before cutting a new release"
-            ));
-        }
-        Ok(())
-    }
-
     fn check_no_existing_release_pr(&self, version: &Version) -> Result<()> {
         if !xtask::gh::available() {
             return Err(anyhow!(
@@ -246,91 +358,52 @@ impl New {
         Ok(())
     }
 
-    fn cut_branch(&self, line: &Line, version: &Version, from: &str) -> Result<()> {
-        let branch = version.to_string();
-        if self.dry_run {
-            eprintln!("(dry-run) would run:");
-            eprintln!(
-                "  git fetch --tags --prune {origin}",
-                origin = self.common.origin
-            );
-            eprintln!("  git checkout {from}");
-            eprintln!("  git checkout -b {branch}");
-            return Ok(());
-        }
-        let _ = (line,); // suppress unused warning until we add line-specific behavior
-        git!(["fetch", "--tags", "--prune", self.common.origin.as_str()]);
-        git!(["checkout", from]);
-        git!(["checkout", "-b", branch.as_str()]);
-        Ok(())
-    }
-
-    fn maybe_add_empty_commit(&self, line: &Line, version: &Version) -> Result<()> {
+    fn maybe_add_empty_commit(
+        &self,
+        wt: &xtask::worktree::WorkTree,
+        line: &Line,
+        version: &Version,
+    ) -> Result<()> {
         if self.no_empty_commit_shim {
-            eprintln!("(--no-empty-commit-shim) skipping shim check");
+            eprintln!(
+                "{}",
+                style("(--no-empty-commit-shim) skipping shim check").dim()
+            );
             return Ok(());
         }
         let main = line.main_branch();
-        let branch = version.to_string();
         let range = format!(
             "{origin}/{main}..HEAD",
             origin = self.common.origin,
             main = main
         );
-        if self.dry_run {
-            eprintln!("(dry-run) would check:");
-            eprintln!("  git rev-list {range} --count");
-            eprintln!("  if 0:");
-            eprintln!("    git commit --allow-empty -m \"Start v{version} PR\"");
-            return Ok(());
-        }
-        let _ = (branch,);
-        let count_output = std::process::Command::new(which::which("git")?)
-            .args(["rev-list", "--count", range.as_str()])
-            .output()?;
-        if !count_output.status.success() {
-            return Err(anyhow!(
-                "failed to count commits between {origin}/{main} and HEAD: {}",
-                String::from_utf8_lossy(&count_output.stderr).trim(),
-                origin = self.common.origin,
-            ));
-        }
-        let count: usize = String::from_utf8(count_output.stdout)?.trim().parse()?;
+        let count_str = wt.git_out(["rev-list", "--count", range.as_str()])?;
+        let count: usize = count_str.trim().parse()?;
         if count == 0 {
             eprintln!(
-                "no commits between {origin}/{main} and HEAD — adding empty commit so the PR can be opened",
-                origin = self.common.origin,
+                "{}",
+                style(format!(
+                    "no commits between {origin}/{main} and HEAD — adding empty commit so the PR can be opened",
+                    origin = self.common.origin,
+                ))
+                .dim()
             );
-            git!([
+            wt.git([
                 "commit",
                 "--allow-empty",
                 "-m",
-                format!("Start v{version} PR").as_str(),
-            ]);
+                &format!("Start v{version} PR"),
+            ])?;
         } else {
             eprintln!(
-                "branch already has {count} commit(s) ahead of {origin}/{main} — no empty commit needed",
-                origin = self.common.origin,
+                "{}",
+                style(format!(
+                    "branch has {count} commit(s) ahead of {origin}/{main} — no empty commit needed",
+                    origin = self.common.origin,
+                ))
+                .dim()
             );
         }
-        Ok(())
-    }
-
-    fn push_branch(&self, version: &Version) -> Result<()> {
-        let branch = version.to_string();
-        if self.dry_run {
-            eprintln!(
-                "(dry-run) would run:\n  git push --set-upstream {origin} {branch}",
-                origin = self.common.origin
-            );
-            return Ok(());
-        }
-        git!([
-            "push",
-            "--set-upstream",
-            self.common.origin.as_str(),
-            branch.as_str(),
-        ]);
         Ok(())
     }
 
@@ -339,18 +412,6 @@ impl New {
         let branch = version.to_string();
         let title = format!("release: v{version}");
         let body = release_pr_body(line, version);
-
-        if self.dry_run {
-            eprintln!("(dry-run) would run:");
-            eprintln!(
-                "  gh pr create --repo {repo} --draft --label release \\\n    \
-                 -B {main} -H {branch} \\\n    \
-                 --title \"{title}\" \\\n    \
-                 --body <body>",
-                repo = self.common.repo,
-            );
-            return Ok(());
-        }
 
         if !xtask::gh::available() {
             return Err(anyhow!("the `gh` CLI is required to open the release PR"));
@@ -373,6 +434,107 @@ impl New {
             body.as_str(),
         ])?;
         Ok(())
+    }
+
+    /// Pretty-print the resolved plan for the user.
+    fn print_plan(&self, line: &Line, kind: &NewVersion, target: &Version, from: &str) {
+        let kind_label = match kind {
+            NewVersion::Patch => "patch",
+            NewVersion::Minor => "minor",
+            NewVersion::Major => "major",
+            NewVersion::Specific(_) => "specific",
+        };
+        eprintln!();
+        eprintln!("{}", style("Cutting a new release.").bold());
+        eprintln!();
+        eprintln!(
+            "  {:<12} {} ({})",
+            style("Line:").dim(),
+            style(line.id()).cyan(),
+            style(format!("{} / {}", line.main_branch(), line.dev_branch())).dim(),
+        );
+        eprintln!(
+            "  {:<12} {} ({} bump)",
+            style("Version:").dim(),
+            style(format!("v{target}")).cyan().bold(),
+            style(kind_label).dim(),
+        );
+        eprintln!(
+            "  {:<12} {}",
+            style("Branch:").dim(),
+            style(target.to_string()).cyan(),
+        );
+        eprintln!("  {:<12} {}", style("Cut from:").dim(), style(from).cyan(),);
+        eprintln!(
+            "  {:<12} {}",
+            style("PR target:").dim(),
+            style(line.main_branch()).cyan(),
+        );
+        eprintln!();
+    }
+
+    /// Print the dry-run command sequence that would execute.
+    fn print_dry_run_steps(&self, line: &Line, target: &Version, from: &str) {
+        let branch = target.to_string();
+        let main = line.main_branch();
+        let origin = &self.common.origin;
+        let repo = &self.common.repo;
+        let wt_path = self.worktree_path.clone().unwrap_or_else(|| {
+            xtask::worktree::default_path(
+                PKG_PROJECT_ROOT.as_std_path(),
+                &format!("release-new-{target}"),
+            )
+        });
+        eprintln!("{}", style("(dry-run) — would run:").yellow());
+        eprintln!();
+        eprintln!("  {} {}", style("# fetch in main repo").dim(), "");
+        eprintln!("  git fetch --tags --prune {origin}");
+        eprintln!();
+        eprintln!(
+            "  {} {}",
+            style("# isolated worktree:").dim(),
+            style(wt_path.display()).cyan(),
+        );
+        eprintln!("  git worktree add {} {from}", wt_path.display());
+        eprintln!();
+        eprintln!("  {}", style("# in worktree:").dim());
+        eprintln!("  git checkout -b {branch}");
+        eprintln!(
+            "  git rev-list {origin}/{main}..HEAD --count   {}",
+            style("# if 0: commit --allow-empty").dim()
+        );
+        eprintln!("  git push --set-upstream {origin} {branch}");
+        eprintln!();
+        eprintln!("  {}", style("# open PR (cwd-independent):").dim());
+        eprintln!("  gh pr create --repo {repo} --draft --label release -B {main} -H {branch} \\");
+        eprintln!("    --title \"release: v{target}\" --body <boilerplate>");
+        eprintln!();
+        eprintln!(
+            "  {}",
+            style("# cleanup (always on success; on failure: keep for debug):").dim()
+        );
+        eprintln!("  git worktree remove --force {}", wt_path.display());
+        eprintln!();
+    }
+}
+
+/// Free function so it can be unit-tested with a mocked tag lookup.
+fn resolve_target_version<F>(line: &Line, kind: &NewVersion, latest_lookup: F) -> Result<Version>
+where
+    F: FnOnce(&Line) -> Result<Option<Version>>,
+{
+    match kind {
+        NewVersion::Specific(v) => Ok(v.clone()),
+        kind => {
+            let latest = latest_lookup(line)?.ok_or_else(|| {
+                anyhow!(
+                    "no prior release tag found on line `{line}` to bump from; \
+                     pass an explicit version like `2.14.1` instead of `{:?}`",
+                    kind
+                )
+            })?;
+            bump(&latest, kind)
+        }
     }
 }
 

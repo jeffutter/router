@@ -1,4 +1,4 @@
-### Fix connection pool to use lazy idle eviction ([PR #9308](https://github.com/apollographql/router/pull/9308))
+### Use lazy idle eviction in connection pool to avoid inter-request TCP closes ([PR #9308](https://github.com/apollographql/router/pull/9308))
 
 When `pool_idle_timeout` was introduced in v2.13.0, the router unconditionally enabled a background timer that proactively closed idle connections exceeding the timeout. In some network environments, the TCP close sent by this background task raced with a new connection attempt and caused significant latency spikes on the next request.
 

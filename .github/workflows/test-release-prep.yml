@@ -180,9 +180,12 @@ jobs:
           echo
 
           # Latest released tag on origin — proxy for "main's current version"
-          # since we're not running on main directly.
-          LATEST_TAG=$(git tag --list 'v*' --no-contains HEAD --sort=-v:refname \
-            | head -1)
+          # since we're not running on main directly.  Use `for-each-ref --count=1`
+          # instead of `git tag ... | head -1` to avoid SIGPIPE under pipefail
+          # when the tag list is long.
+          LATEST_TAG=$(git for-each-ref --count=1 --sort=-v:refname \
+            --format='%(refname:short)' \
+            'refs/tags/v*' --no-contains HEAD)
           LATEST_VERSION="${LATEST_TAG#v}"
           echo "Latest release tag (proxy for main's current version): ${LATEST_TAG:-<none>}"
 

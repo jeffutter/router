@@ -6,13 +6,12 @@ mod reconcile;
 mod state;
 mod status;
 
+use anyhow::Result;
 pub(crate) use new::New;
 pub(crate) use pre_verify::PreVerify;
 pub(crate) use prepare::Prepare;
 pub(crate) use reconcile::Reconcile;
 pub(crate) use status::Status;
-
-use anyhow::Result;
 
 #[derive(Debug, clap::Subcommand)]
 pub enum Command {

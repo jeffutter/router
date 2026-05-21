@@ -14,9 +14,9 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
-use anyhow::anyhow;
 use anyhow::Context;
 use anyhow::Result;
+use anyhow::anyhow;
 
 pub struct WorkTree {
     path: PathBuf,

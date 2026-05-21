@@ -259,7 +259,7 @@ impl New {
         ];
         let selection = Select::with_theme(&ColorfulTheme::default())
             .with_prompt("What kind of release?")
-            .items(&items)
+            .items(items)
             .default(0)
             .interact()?;
         match selection {
@@ -474,7 +474,7 @@ impl New {
         });
         eprintln!("{}", style("(dry-run) — would run:").yellow());
         eprintln!();
-        eprintln!("  {} {}", style("# fetch in main repo").dim(), "");
+        eprintln!("  {} ", style("# fetch in main repo").dim());
         eprintln!("  git fetch --tags --prune {origin}");
         eprintln!();
         eprintln!(

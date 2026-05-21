@@ -1,9 +1,9 @@
-use anyhow::anyhow;
 use anyhow::Result;
-use dialoguer::theme::ColorfulTheme;
+use anyhow::anyhow;
 use dialoguer::Confirm;
 use dialoguer::Input;
 use dialoguer::Select;
+use dialoguer::theme::ColorfulTheme;
 use semver::Version;
 use xtask::*;
 

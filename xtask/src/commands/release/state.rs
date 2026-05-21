@@ -9,8 +9,8 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-use anyhow::anyhow;
 use anyhow::Result;
+use anyhow::anyhow;
 use semver::Version;
 use serde::Deserialize;
 use serde::Serialize;
@@ -165,7 +165,7 @@ fn pair_lines(branches: &[String]) -> (Vec<ReleaseLine>, Vec<String>) {
 
     // Stable ordering: tip first, then staging lines descending by major, then
     // LTS lines descending by major+minor.
-    lines.sort_by(|a, b| line_order_key(&a.line).cmp(&line_order_key(&b.line)));
+    lines.sort_by_key(|a| line_order_key(&a.line));
 
     (lines, unpaired)
 }

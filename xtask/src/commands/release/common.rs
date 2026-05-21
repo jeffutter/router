@@ -3,8 +3,8 @@
 use std::fmt;
 use std::str::FromStr;
 
-use anyhow::anyhow;
 use anyhow::Result;
+use anyhow::anyhow;
 
 /// A release line.
 ///

@@ -6,9 +6,9 @@
 use std::process::Command;
 use std::process::Stdio;
 
-use anyhow::anyhow;
 use anyhow::Context;
 use anyhow::Result;
+use anyhow::anyhow;
 use serde::de::DeserializeOwned;
 
 /// Returns `true` if the `gh` CLI is available on PATH.

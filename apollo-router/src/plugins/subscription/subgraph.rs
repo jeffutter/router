@@ -218,11 +218,11 @@ async fn call_websocket(
         _ => None,
     };
 
-    let request = get_websocket_request(service_name, parts, subgraph_cfg)?;
+    // Extract before get_websocket_request, which consumes parts (headers only;
+    // extensions are not forwarded to the WebSocket request).
+    let signing_params = parts.extensions.get::<Arc<SigningParamsConfig>>().cloned();
 
-    let signing_params = context
-        .extensions()
-        .with_lock(|lock| lock.get::<Arc<SigningParamsConfig>>().cloned());
+    let request = get_websocket_request(service_name, parts, subgraph_cfg)?;
 
     let request = if let Some(signing_params) = signing_params {
         signing_params.sign_empty(request, service_name).await?
@@ -597,8 +597,9 @@ async fn subgraph_request(
         let mode = subscription_config.mode.get_subgraph_config(service_name);
         let context = request.context.clone();
 
-        let hashed_request = if subscription_config.deduplication.enabled {
-            request.to_sha256(&subscription_config.deduplication.ignored_headers)
+        let dedup = subscription_config.deduplication.get(service_name);
+        let hashed_request = if dedup.enabled {
+            request.to_sha256(&dedup.ignored_headers, dedup.ignore_auth_context)
         } else {
             Uuid::new_v4().to_string()
         };

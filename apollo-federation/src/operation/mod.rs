@@ -138,6 +138,40 @@ fn sort_value(value: &mut executable::Value) {
     }
 }
 
+/// Returns a copy of `value` with every variable reference named in `substitutions` replaced by the
+/// corresponding value, recursing into list and object values. Variables not in `substitutions` and
+/// all other values are returned unchanged.
+fn substitute_variables_in_value(
+    value: &executable::Value,
+    substitutions: &IndexMap<Name, Node<executable::Value>>,
+) -> executable::Value {
+    use apollo_compiler::executable::Value;
+    match value {
+        Value::Variable(name) => substitutions
+            .get(name)
+            .map(|replacement| replacement.as_ref().clone())
+            .unwrap_or_else(|| value.clone()),
+        Value::List(items) => Value::List(
+            items
+                .iter()
+                .map(|item| Node::new(substitute_variables_in_value(item, substitutions)))
+                .collect(),
+        ),
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(name, item)| {
+                    (
+                        name.clone(),
+                        Node::new(substitute_variables_in_value(item, substitutions)),
+                    )
+                })
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+
 /// Sort arguments, which means specifically sorting arguments by names and object values by keys
 /// (assuming no duplicates).
 ///
@@ -720,6 +754,13 @@ mod field_selection {
             }
         }
 
+        pub(crate) fn with_updated_arguments(&self, arguments: impl Into<ArgumentList>) -> Self {
+            Self {
+                arguments: arguments.into(),
+                ..self.clone()
+            }
+        }
+
         /// Turn this `Field` into a `FieldSelection` with the given sub-selection. If this is
         /// meant to be a leaf selection, use `None`.
         pub(crate) fn with_subselection(
@@ -1071,6 +1112,63 @@ impl SelectionSet {
         }
     }
 
+    /// Returns a copy of this selection set with every field-argument value that references a
+    /// variable named in `substitutions` replaced by the corresponding value. Other variable
+    /// references and values are left unchanged.
+    ///
+    /// This binds the variables in a `@requires` field set — which reference the annotated field's
+    /// own arguments (e.g. `price(currency: $currency)`) — to the values the operation being planned
+    /// supplies for those arguments, before the field set is resolved into a subgraph fetch. A
+    /// supplied literal is inlined; a supplied operation variable is forwarded as-is (its value is
+    /// resolved at execution time).
+    pub(crate) fn substitute_field_argument_variables(
+        &self,
+        substitutions: &IndexMap<Name, Node<executable::Value>>,
+    ) -> Result<SelectionSet, FederationError> {
+        let mut new_selections = Vec::with_capacity(self.selections.len());
+        for selection in self.selections.values() {
+            let new_selection_set = match selection.selection_set() {
+                Some(selection_set) => {
+                    Some(selection_set.substitute_field_argument_variables(substitutions)?)
+                }
+                None => None,
+            };
+            let new_selection = match selection {
+                Selection::Field(field_selection) => {
+                    let field = &field_selection.field;
+                    let arguments: ArgumentList = field
+                        .arguments
+                        .iter()
+                        .map(|argument| {
+                            Node::new(executable::Argument {
+                                name: argument.name.clone(),
+                                value: Node::new(substitute_variables_in_value(
+                                    &argument.value,
+                                    substitutions,
+                                )),
+                            })
+                        })
+                        .collect();
+                    Selection::from_field(
+                        field.with_updated_arguments(arguments),
+                        new_selection_set,
+                    )
+                }
+                // Inline fragments carry no field arguments; only the child selection set needs
+                // (recursively) substituting, which `new_selection_set` already holds.
+                Selection::InlineFragment(_) => {
+                    selection.with_updated_selection_set(new_selection_set)?
+                }
+            };
+            new_selections.push(new_selection);
+        }
+        Ok(SelectionSet::from_raw_selections(
+            self.schema.clone(),
+            self.type_position.clone(),
+            new_selections,
+        ))
+    }
+
     #[cfg(any(doc, test))]
     pub(crate) fn parse(
         schema: ValidFederationSchema,
@@ -1082,6 +1180,7 @@ impl SelectionSet {
             type_position.type_name().clone(),
             source_text,
             false,
+            &Default::default(),
         )?
         .0;
         let fragments = Default::default();

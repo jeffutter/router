@@ -1132,6 +1132,11 @@ where
         context: &OpGraphPathContext,
         excluded_destinations: &ExcludedDestinations,
         excluded_conditions: &ExcludedConditions,
+        // When the edge's `@requires` condition references the annotated field's arguments as
+        // variables, this holds the condition with those variables already substituted for the
+        // values the operation supplies for those arguments. It overrides the edge's own conditions
+        // during resolution (and, because it is supplied, bypasses the condition-resolution cache).
+        extra_conditions: Option<&SelectionSet>,
     ) -> Result<ConditionResolution, FederationError> {
         let edge_weight = self.graph.edge_weight(edge)?;
         if edge_weight.conditions.is_none() && edge_weight.required_contexts.is_empty() {
@@ -1334,7 +1339,7 @@ where
             context,
             excluded_destinations,
             excluded_conditions,
-            None,
+            extra_conditions,
         )?;
         if matches!(resolution, ConditionResolution::Unsatisfied { .. }) {
             return Ok(ConditionResolution::Unsatisfied { reason: None });
@@ -1617,6 +1622,7 @@ where
                     context,
                     &excluded_destinations.add_excluded(&edge_tail_weight.source),
                     excluded_conditions,
+                    None,
                 )?;
 
                 let ConditionResolution::Satisfied {

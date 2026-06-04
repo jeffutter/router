@@ -4,7 +4,10 @@ use std::fmt::Formatter;
 use std::ops::Deref;
 use std::sync::Arc;
 
+use apollo_compiler::Name;
+use apollo_compiler::Node;
 use apollo_compiler::ast::Value;
+use apollo_compiler::collections::IndexMap;
 use apollo_compiler::collections::IndexSet;
 use itertools::Itertools;
 use petgraph::graph::EdgeIndex;
@@ -32,6 +35,7 @@ use crate::operation::SelectionId;
 use crate::operation::SelectionKey;
 use crate::operation::SelectionSet;
 use crate::operation::SiblingTypename;
+use crate::operation::VariableCollector;
 use crate::query_graph::OverrideConditions;
 use crate::query_graph::QueryGraphEdgeTransition;
 use crate::query_graph::QueryGraphNodeType;
@@ -626,12 +630,15 @@ impl OpGraphPath {
         condition_resolver: &mut impl ConditionResolver,
         context: &OpGraphPathContext,
     ) -> Result<Option<OpGraphPath>, FederationError> {
+        let field_argument_substituted_conditions =
+            self.field_argument_substituted_conditions(edge, &operation_field)?;
         let condition_resolution = self.can_satisfy_conditions(
             edge,
             condition_resolver,
             context,
             &Default::default(),
             &Default::default(),
+            field_argument_substituted_conditions.as_ref(),
         )?;
         if matches!(condition_resolution, ConditionResolution::Satisfied { .. }) {
             self.add(
@@ -644,6 +651,61 @@ impl OpGraphPath {
         } else {
             Ok(None)
         }
+    }
+
+    /// If `edge`'s `@requires` condition references `operation_field`'s arguments as variables,
+    /// returns a copy of that condition with each variable substituted for the value
+    /// `operation_field` supplies for that argument (a literal, or a forwarded operation variable).
+    /// Returns `None` when there is nothing to substitute (the common case), so that condition
+    /// resolution proceeds normally and stays cacheable.
+    fn field_argument_substituted_conditions(
+        &self,
+        edge: EdgeIndex,
+        operation_field: &Field,
+    ) -> Result<Option<SelectionSet>, FederationError> {
+        let edge_weight = self.graph.edge_weight(edge)?;
+        let Some(conditions) = &edge_weight.conditions else {
+            return Ok(None);
+        };
+        // Collect referenced variables first so the common (no-variable) case returns before allocating.
+        let mut collector = VariableCollector::new();
+        collector.visit_selection_set(conditions);
+        let referenced_variables = collector.into_inner();
+        if referenced_variables.is_empty() {
+            return Ok(None);
+        }
+        // Bind each referenced variable that names one of the annotated field's arguments to that
+        // argument's effective value for this operation, following GraphQL argument coercion: the
+        // value the client supplied, else the argument's schema default, else null for a nullable
+        // argument the client omitted. (A non-null argument without a default is always supplied,
+        // per operation validation.)
+        let field_definition = operation_field
+            .field_position
+            .get(operation_field.schema.schema())?;
+        let mut substitutions: IndexMap<Name, Node<Value>> = IndexMap::default();
+        for argument_definition in field_definition.arguments.iter() {
+            if !referenced_variables.contains(&argument_definition.name) {
+                continue;
+            }
+            let value = if let Some(supplied) = operation_field
+                .arguments
+                .iter()
+                .find(|argument| argument.name == argument_definition.name)
+            {
+                supplied.value.clone()
+            } else if let Some(default_value) = &argument_definition.default_value {
+                default_value.clone()
+            } else {
+                Node::new(Value::Null)
+            };
+            substitutions.insert(argument_definition.name.clone(), value);
+        }
+        if substitutions.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(
+            conditions.substitute_field_argument_variables(&substitutions)?,
+        ))
     }
 
     pub(crate) fn subgraph_jumps(&self) -> Result<u32, FederationError> {
@@ -1690,6 +1752,7 @@ impl OpGraphPath {
                                     context,
                                     &Default::default(),
                                     &Default::default(),
+                                    None,
                                 )?;
                                 if matches!(
                                     condition_resolution,

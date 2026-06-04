@@ -32,7 +32,9 @@ use crate::query_graph::QueryGraphNode;
 use crate::query_graph::QueryGraphNodeType;
 use crate::query_plan::query_planning_traversal::non_local_selections_estimation::precompute_non_local_selection_metadata;
 use crate::schema::ValidFederationSchema;
+use crate::schema::field_set::field_argument_names;
 use crate::schema::field_set::parse_field_set;
+use crate::schema::field_set::parse_field_set_allowing_field_argument_variables;
 use crate::schema::position::AbstractTypeDefinitionPosition;
 use crate::schema::position::CompositeTypeDefinitionPosition;
 use crate::schema::position::FieldDefinitionPosition;
@@ -1509,6 +1511,10 @@ impl FederatedQueryGraphBuilder {
             let schema = self.base.query_graph.schema_by_source(source)?;
             let subgraph_data = self.subgraphs.get(source)?;
             let field = field_definition_position.get(schema.schema())?;
+            // A `@requires` field set may reference the annotated field's own arguments as variables
+            // (e.g. `price(currency: $currency)`). Collect those argument names so the parser accepts
+            // them; they're stored symbolically on the edge and bound during query planning.
+            let allowed_variable_names = field_argument_names(field);
             let mut all_conditions = Vec::new();
             for directive in field
                 .directives
@@ -1518,11 +1524,11 @@ impl FederatedQueryGraphBuilder {
                     .federation_spec_definition
                     .requires_directive_arguments(directive)?;
                 // @requires field set is validated against the supergraph
-                let conditions = parse_field_set(
+                let conditions = parse_field_set_allowing_field_argument_variables(
                     &self.supergraph_schema,
                     field_definition_position.parent().type_name().clone(),
                     application.fields,
-                    true,
+                    &allowed_variable_names,
                 )?;
                 all_conditions.push(conditions);
             }

@@ -389,6 +389,7 @@ impl TransitionGraphPath {
                 &Default::default(),
                 &Default::default(),
                 &Default::default(),
+                None,
             )?;
             match condition_resolution {
                 ConditionResolution::Satisfied { .. } => {

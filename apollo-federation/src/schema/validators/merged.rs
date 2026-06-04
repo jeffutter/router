@@ -1,10 +1,12 @@
 use std::sync::LazyLock;
 
 use apollo_compiler::Name;
+use apollo_compiler::executable;
 use apollo_compiler::executable::FieldSet;
 use apollo_compiler::schema::Directive;
 use apollo_compiler::schema::ExtendedType;
 use apollo_compiler::schema::FieldDefinition;
+use apollo_compiler::schema::Type;
 use apollo_compiler::validation::Valid;
 use itertools::Itertools;
 use regex::Regex;
@@ -17,6 +19,8 @@ use crate::error::HasLocations;
 use crate::error::Locations;
 use crate::error::SingleFederationError;
 use crate::schema::FederationSchema;
+use crate::schema::field_set::field_argument_names;
+use crate::schema::field_set::undefined_variable_name;
 use crate::schema::position::CompositeTypeDefinitionPosition;
 use crate::schema::position::InterfaceTypeDefinitionPosition;
 use crate::schema::position::ObjectFieldDefinitionPosition;
@@ -155,6 +159,12 @@ pub(crate) fn validate_merged_schema(
                 .get_type(&parent_field_pos.type_name)?
                 .try_into()?;
 
+            // Collect the annotated field's argument names; a `@requires` field set may reference
+            // them as variables (e.g. `price(currency: $currency)`), so their "undefined variable"
+            // diagnostics are expected and tolerated below.
+            let parent_field_definition = parent_field_pos.get(subgraph.schema().schema())?;
+            let requires_field_argument_names = field_argument_names(parent_field_definition);
+
             let Err(error) = FieldSet::parse_and_validate(
                 Valid::assume_valid_ref(supergraph_schema.schema()),
                 parent_type_pos_in_supergraph.type_name().clone(),
@@ -163,6 +173,11 @@ pub(crate) fn validate_merged_schema(
             ) else {
                 continue;
             };
+            // Keep the parsed field set so we can additionally check, below, that any
+            // field-argument variables are used at positions whose type is compatible with the
+            // annotated field's argument they are bound to. (`error.partial` is otherwise discarded
+            // by `FederationError::from`, so we move it out rather than clone.)
+            let parsed_field_set = error.partial.selection_set;
             // Providing a useful error message to the user here is tricky in the general case
             // because what we checked is that a given subgraph @requires application is invalid "on
             // the supergraph", but the user seeing the error will not have the supergraph, so we
@@ -206,7 +221,7 @@ pub(crate) fn validate_merged_schema(
             // having error codes and variants for all the GraphQL validations. The apollo-compiler
             // crate has this already, but it's crate-private and potentially unstable, so we can't
             // use that for now.
-            for error in FederationError::from(error).into_errors() {
+            for error in FederationError::from(error.errors).into_errors() {
                 let SingleFederationError::InvalidGraphQL { message } = error else {
                     errors.push(CompositionError::SubgraphError {
                         subgraph: subgraph.name.to_string(),
@@ -215,6 +230,25 @@ pub(crate) fn validate_merged_schema(
                     });
                     continue;
                 };
+                // A variable must name one of the annotated field's arguments; those are tolerated
+                // here. Any other variable cannot be bound and is reported as an invalid field set.
+                if let Some(variable_name) = undefined_variable_name(&message) {
+                    if requires_field_argument_names.contains(&variable_name) {
+                        continue;
+                    }
+                    errors.push(CompositionError::SubgraphError {
+                        subgraph: subgraph.name.to_string(),
+                        error: SingleFederationError::RequiresInvalidFields {
+                            coordinate: parent_field_pos.to_string(),
+                            application: requires_directive.to_string(),
+                            message: format!(
+                                "variable \"${variable_name}\" is not defined; a variable in a @requires field set must reference an argument of \"{parent_field_pos}\"",
+                            ),
+                        },
+                        locations: requires_directive.locations(subgraph),
+                    });
+                    continue;
+                }
                 if let Some(captures) =
                     APOLLO_COMPILER_UNDEFINED_ARGUMENT_PATTERN.captures(&message)
                 {
@@ -289,9 +323,101 @@ pub(crate) fn validate_merged_schema(
                     message,
                 );
             }
+
+            // Validate that each field-argument variable in the field set is used at a position
+            // whose type is compatible with the annotated field's argument it is bound to.
+            let mut variable_type_errors = Vec::new();
+            collect_requires_variable_type_errors(
+                &parsed_field_set,
+                parent_field_definition,
+                &mut variable_type_errors,
+            );
+            for message in variable_type_errors {
+                errors.push(CompositionError::SubgraphError {
+                    subgraph: subgraph.name.to_string(),
+                    error: SingleFederationError::RequiresInvalidFields {
+                        coordinate: parent_field_pos.to_string(),
+                        application: requires_directive.to_string(),
+                        message,
+                    },
+                    locations: requires_directive.locations(subgraph),
+                });
+            }
         }
     }
     Ok(())
+}
+
+/// Walks a parsed `@requires` field set and, for every field argument whose value is a variable
+/// that names an argument of `annotated_field`, checks that the annotated field's argument type is
+/// compatible with the type expected at that position. Incompatibilities are pushed to `errors` as
+/// formatted messages.
+fn collect_requires_variable_type_errors(
+    selection_set: &executable::SelectionSet,
+    annotated_field: &FieldDefinition,
+    errors: &mut Vec<String>,
+) {
+    for selection in &selection_set.selections {
+        match selection {
+            executable::Selection::Field(field) => {
+                for argument in &field.arguments {
+                    let executable::Value::Variable(variable_name) = argument.value.as_ref() else {
+                        continue;
+                    };
+                    let Some(bound_argument) = annotated_field.argument_by_name(variable_name)
+                    else {
+                        continue;
+                    };
+                    let Some(location_argument) = field.definition.argument_by_name(&argument.name)
+                    else {
+                        continue;
+                    };
+                    if !argument_types_compatible(&bound_argument.ty, &location_argument.ty) {
+                        errors.push(format!(
+                            "variable \"${variable_name}\" cannot be used for argument \"{}\" of field \"{}\": it is bound to argument \"{}\" of type \"{}\", which is not compatible with the expected type \"{}\"",
+                            argument.name,
+                            field.name,
+                            variable_name,
+                            bound_argument.ty,
+                            location_argument.ty,
+                        ));
+                    }
+                }
+                collect_requires_variable_type_errors(
+                    &field.selection_set,
+                    annotated_field,
+                    errors,
+                );
+            }
+            executable::Selection::InlineFragment(inline_fragment) => {
+                collect_requires_variable_type_errors(
+                    &inline_fragment.selection_set,
+                    annotated_field,
+                    errors,
+                )
+            }
+            executable::Selection::FragmentSpread(_) => {}
+        }
+    }
+}
+
+/// Conservative input-type compatibility for a `@requires` field-argument variable: the variable's
+/// bound type and the location type must share the same inner named type and the same list nesting.
+/// Nullability differences are intentionally not rejected here — a nullable value flowing into a
+/// non-null position surfaces at runtime via argument coercion (an omitted/`null` value), not as a
+/// type error — so this only flags clear mismatches (e.g. `String` bound into an `Int` argument).
+fn argument_types_compatible(variable_type: &Type, location_type: &Type) -> bool {
+    match (variable_type, location_type) {
+        (
+            Type::Named(left) | Type::NonNullNamed(left),
+            Type::Named(right) | Type::NonNullNamed(right),
+        ) => left == right,
+        (
+            Type::List(left) | Type::NonNullList(left),
+            Type::List(right) | Type::NonNullList(right),
+        ) => argument_types_compatible(left, right),
+        _ => false,
+    }
 }
 
 // This matches the error message for `DiagnosticData::UndefinedArgument` as defined in

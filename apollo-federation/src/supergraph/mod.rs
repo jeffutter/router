@@ -62,6 +62,7 @@ use crate::link::spec::Version;
 use crate::link::spec_definition::SpecDefinition;
 use crate::schema::FederationSchema;
 use crate::schema::ValidFederationSchema;
+use crate::schema::field_set::field_argument_names;
 use crate::schema::field_set::parse_field_set_without_normalization;
 use crate::schema::position::CompositeTypeDefinitionPosition;
 use crate::schema::position::DirectiveDefinitionPosition;
@@ -2080,6 +2081,13 @@ fn remove_inactive_applications(
 ) -> Result<(), FederationError> {
     let mut replacement_directives = Vec::new();
     let field = object_or_interface_field_definition_position.get(schema.schema())?;
+    // A `@requires` field set may reference the annotated field's own arguments as variables
+    // (e.g. `price(currency: $currency)`); tolerate those when parsing here. `@provides` field
+    // sets cannot reference variables.
+    let allowed_variable_names = match directive_kind {
+        FieldSetDirectiveKind::Requires => field_argument_names(field),
+        FieldSetDirectiveKind::Provides => Default::default(),
+    };
     for directive in field.directives.get_all(name_in_schema) {
         let (fields, parent_type_pos, target_schema) = match directive_kind {
             FieldSetDirectiveKind::Provides => {
@@ -2126,6 +2134,7 @@ fn remove_inactive_applications(
             parent_type_pos.type_name().clone(),
             fields,
             true,
+            &allowed_variable_names,
         )?;
 
         if remove_non_external_leaf_fields(schema, &mut fields)? {

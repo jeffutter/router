@@ -1,10 +1,17 @@
+use std::sync::LazyLock;
+
+use apollo_compiler::Name;
 use apollo_compiler::Node;
 use apollo_compiler::Schema;
+use apollo_compiler::collections::IndexSet;
 use apollo_compiler::executable;
 use apollo_compiler::executable::FieldSet;
 use apollo_compiler::schema::ExtendedType;
+use apollo_compiler::schema::FieldDefinition;
 use apollo_compiler::schema::NamedType;
+use apollo_compiler::validation::DiagnosticList;
 use apollo_compiler::validation::Valid;
+use regex::Regex;
 
 use crate::error::FederationError;
 use crate::error::MultipleFederationErrors;
@@ -78,19 +85,108 @@ pub(crate) fn parse_field_set(
         )?)
     };
 
-    // A field set should not contain any named fragments.
+    finalize_field_set(&field_set.selection_set, schema, validate)
+}
+
+/// Converts a parsed field set into the normalized federation `SelectionSet`, rejecting named
+/// fragments (always) and aliases (when `check_aliases`), neither of which federation directives
+/// permit in a field set.
+fn finalize_field_set(
+    selection_set: &executable::SelectionSet,
+    schema: &ValidFederationSchema,
+    check_aliases: bool,
+) -> Result<SelectionSet, FederationError> {
     let fragments = Default::default();
     let selection_set =
-        SelectionSet::from_selection_set(&field_set.selection_set, &fragments, schema, &||
-            // never cancel
-            Ok(()))?;
-
-    // Validate that the field set has no aliases.
-    if validate {
+        SelectionSet::from_selection_set(selection_set, &fragments, schema, &||
+        // never cancel
+        Ok(()))?;
+    if check_aliases {
         check_absence_of_aliases(&selection_set)?;
     }
-
     Ok(selection_set)
+}
+
+/// The names of `field`'s arguments — the set of variable names a `@requires` field set on `field`
+/// may reference, since each bare `$argName` binds to the field's argument of that name.
+pub(crate) fn field_argument_names(field: &FieldDefinition) -> IndexSet<Name> {
+    field
+        .arguments
+        .iter()
+        .map(|argument| argument.name.clone())
+        .collect()
+}
+
+// This matches the error message for `DiagnosticData::UndefinedVariable` as defined in
+// https://github.com/apollographql/apollo-rs/blob/apollo-compiler%401.32.0/crates/apollo-compiler/src/validation/diagnostics.rs
+static APOLLO_COMPILER_UNDEFINED_VARIABLE_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"variable `\$((?-u:\w)+)` is not defined").unwrap());
+
+/// If `message` is an apollo-compiler "undefined variable" diagnostic (e.g.
+/// ``variable `$currency` is not defined``), returns the referenced variable name.
+pub(crate) fn undefined_variable_name(message: &str) -> Option<Name> {
+    APOLLO_COMPILER_UNDEFINED_VARIABLE_PATTERN
+        .captures(message)
+        .and_then(|captures| captures.get(1))
+        .and_then(|name| Name::new(name.as_str()).ok())
+}
+
+/// Collects every diagnostic in `diagnostics` into a `MultipleFederationErrors`, except tolerated
+/// `@requires` field-argument variable references — an "undefined variable" diagnostic whose name
+/// appears in `allowed_variable_names` (see [`parse_field_set_allowing_field_argument_variables`]).
+/// Shared by the two field-set entry points that allow such variables.
+fn collect_unexpected_field_set_diagnostics(
+    diagnostics: &DiagnosticList,
+    allowed_variable_names: &IndexSet<Name>,
+) -> MultipleFederationErrors {
+    let mut unexpected_errors = MultipleFederationErrors { errors: vec![] };
+    for diagnostic in diagnostics.iter() {
+        let message = diagnostic.to_string();
+        let is_tolerated_variable = undefined_variable_name(&message)
+            .is_some_and(|name| allowed_variable_names.contains(&name));
+        if is_tolerated_variable {
+            continue;
+        }
+        unexpected_errors
+            .errors
+            .push(SingleFederationError::InvalidGraphQL { message });
+    }
+    unexpected_errors
+}
+
+/// Like [`parse_field_set`] with `validate = true`, but tolerates references to GraphQL variables
+/// whose names appear in `allowed_variable_names`. This supports `@requires` field sets that
+/// reference the annotated field's own arguments (e.g. `price(currency: $currency)` where
+/// `currency` is an argument of the field carrying the `@requires`). Such variables remain in the
+/// returned selection set as placeholders, to be substituted at query-planning time with the
+/// values the operation supplies for those arguments (see
+/// `SelectionSet::substitute_field_argument_variables`).
+///
+/// Every other validation failure — including a reference to an undefined variable that is *not*
+/// one of the annotated field's arguments — remains a hard error.
+pub(crate) fn parse_field_set_allowing_field_argument_variables(
+    schema: &ValidFederationSchema,
+    parent_type_name: NamedType,
+    field_set: &str,
+    allowed_variable_names: &IndexSet<Name>,
+) -> Result<SelectionSet, FederationError> {
+    let field_set = match FieldSet::parse_and_validate(
+        schema.schema(),
+        parent_type_name,
+        field_set,
+        "field_set.graphql",
+    ) {
+        Ok(field_set) => field_set,
+        Err(with_errors) => {
+            collect_unexpected_field_set_diagnostics(&with_errors.errors, allowed_variable_names)
+                .into_result()?;
+            // The only diagnostics were tolerated field-argument variables; the field set is
+            // otherwise valid, so the fully-parsed `partial` result is safe to use.
+            Valid::assume_valid(with_errors.partial)
+        }
+    };
+
+    finalize_field_set(&field_set.selection_set, schema, true)
 }
 
 /// When we first see a field set in a GraphQL document, there are some constraints which can make
@@ -115,28 +211,39 @@ pub(crate) fn parse_field_set_without_normalization(
     parent_type_name: NamedType,
     field_set: &str,
     fix_string_enum_values: bool,
+    // Variables in the field set whose names appear here are tolerated rather than reported as
+    // undefined; see [`parse_field_set_allowing_field_argument_variables`]. Pass an empty set for
+    // field sets that cannot reference variables (e.g. `@provides`).
+    allowed_variable_names: &IndexSet<Name>,
 ) -> Result<(executable::SelectionSet, bool), FederationError> {
     // Note this parsing takes care of adding curly braces ("{" and "}") if they aren't in the
     // string.
-    let (field_set, is_modified) = if fix_string_enum_values {
-        let mut field_set = FieldSet::parse(
-            schema,
-            parent_type_name.clone(),
-            field_set,
-            "field_set.graphql",
-        )?;
-        let is_modified = fix_string_enum_values_in_field_set(schema, &mut field_set);
-        field_set.validate(schema)?;
-        // `FieldSet::validate()` strangely doesn't return `Valid<FieldSet>`, so we instead use
-        // `Valid::assume_valid()` here.
-        (Valid::assume_valid(field_set), is_modified)
+    let mut field_set = FieldSet::parse(schema, parent_type_name, field_set, "field_set.graphql")?;
+    let is_modified = if fix_string_enum_values {
+        fix_string_enum_values_in_field_set(schema, &mut field_set)
     } else {
-        (
-            FieldSet::parse_and_validate(schema, parent_type_name, field_set, "field_set.graphql")?,
-            false,
-        )
+        false
     };
-    Ok((field_set.into_inner().selection_set, is_modified))
+    validate_field_set_allowing_field_argument_variables(
+        &field_set,
+        schema,
+        allowed_variable_names,
+    )?;
+    Ok((field_set.selection_set, is_modified))
+}
+
+/// Runs [`FieldSet::validate`], tolerating "undefined variable" diagnostics whose variable name
+/// appears in `allowed_variable_names` (i.e. references to the annotated field's own arguments in a
+/// `@requires` field set). Any other diagnostic is returned as an error.
+fn validate_field_set_allowing_field_argument_variables(
+    field_set: &FieldSet,
+    schema: &Valid<Schema>,
+    allowed_variable_names: &IndexSet<Name>,
+) -> Result<(), FederationError> {
+    let Err(diagnostics) = field_set.validate(schema) else {
+        return Ok(());
+    };
+    collect_unexpected_field_set_diagnostics(&diagnostics, allowed_variable_names).into_result()
 }
 
 /// In the past, arguments in field sets may have mistakenly provided strings when they meant to
@@ -256,7 +363,7 @@ fn fix_string_enum_values_in_input_value(
             let ExtendedType::Enum(type_definition) = type_definition else {
                 return is_modified;
             };
-            let Ok(enum_value) = executable::Name::new(string_value) else {
+            let Ok(enum_value) = Name::new(string_value) else {
                 return is_modified;
             };
             if !type_definition.values.contains_key(&enum_value) {
